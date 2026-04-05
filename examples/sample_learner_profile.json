@@ -1,0 +1,12 @@
+{
+  "mathematics_background": "Linear algebra, multivariable calculus, and basic probability.",
+  "machine_learning_background": "Intermediate familiarity with supervised learning and optimization.",
+  "deep_learning_background": "Beginner familiarity with neural networks and training loops.",
+  "python_background": "Intermediate Python with NumPy and notebook usage.",
+  "tensor_familiarity": "Understands tensor ranks and common batch dimensions.",
+  "wants_tensor_shapes": true,
+  "wants_derivations": true,
+  "preferred_depth": "deep",
+  "preferred_pacing": "moderate"
+}
+

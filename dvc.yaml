@@ -1,0 +1,37 @@
+stages:
+  parse_paper:
+    cmd: python -c "print('Phase 0 placeholder: parse_paper is implemented in a later phase.')"
+    deps:
+      - params.yaml
+      - examples
+    outs:
+      - runs
+  chunk_paper:
+    cmd: python -c "print('Phase 0 placeholder: chunk_paper is implemented in a later phase.')"
+    deps:
+      - params.yaml
+      - examples
+    outs:
+      - runs
+  plan_notebook:
+    cmd: python -c "print('Phase 0 placeholder: plan_notebook is implemented in a later phase.')"
+    deps:
+      - params.yaml
+      - examples
+    outs:
+      - runs
+  generate_notebook:
+    cmd: python -c "print('Phase 0 placeholder: generate_notebook is implemented in a later phase.')"
+    deps:
+      - params.yaml
+      - examples
+    outs:
+      - runs
+  validate_notebook:
+    cmd: python -c "print('Phase 0 placeholder: validate_notebook is implemented in a later phase.')"
+    deps:
+      - params.yaml
+      - examples
+    outs:
+      - runs
+

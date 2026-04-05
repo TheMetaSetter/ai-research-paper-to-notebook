@@ -1,0 +1,13 @@
+default_model_name: gemma-4-e2b-q4_0
+inference_backend: llama_cpp
+chunk_size_characters: 2200
+chunk_overlap_characters: 250
+retrieval_top_k: 6
+maximum_generation_sections:
+generation_temperature: 0.2
+generation_max_output_tokens: 1800
+notebook_execution_timeout_seconds: 120
+enable_notebook_execution_smoke_test: true
+enable_repair_pass: true
+enable_widgets: true
+
