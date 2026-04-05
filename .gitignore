@@ -207,3 +207,8 @@ marimo/_lsp/
 __marimo__/
 
 README.md
+
+checkpoints/
+tmp/
+prompts/
+documents/
