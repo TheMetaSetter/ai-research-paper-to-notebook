@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import json
 import hashlib
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 import typer
 
 from src.artifact_store import RunArtifactStore, utc_timestamp_string
+from src.chunking import build_chunks_from_parsed_paper
 from src.config import EnvironmentSettings, RunParameters, load_environment_settings, load_run_parameters
-from src.schemas import RunManifest
+from src.parse_pdf import parse_pdf_into_parsed_paper
+from src.schemas import ParsedPaper, RunManifest
 
 app = typer.Typer(help="Generate pedagogy-first notebooks from AI research papers.")
 
@@ -33,6 +37,20 @@ def _compute_file_sha256(file_path: Path) -> str:
         for chunk in iter(lambda: input_file.read(8192), b""):
             file_hasher.update(chunk)
     return file_hasher.hexdigest()
+
+
+def _current_code_version() -> str:
+    try:
+        completed_process = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return "unknown"
+
+    return completed_process.stdout.strip() or "unknown"
 
 
 def _prepare_run_command_context(pdf_path: Path, params_path: Path) -> CommandContext:
@@ -105,8 +123,96 @@ def run(
 def parse(pdf_path: Path, params_path: Path = Path("params.yaml")) -> None:
     """Run only PDF parsing and emit stage artifacts."""
 
-    _prepare_run_command_context(pdf_path=pdf_path, params_path=params_path)
-    raise NotImplementedError("PDF parsing will be implemented in a later phase.")
+    command_context = _prepare_run_command_context(pdf_path=pdf_path, params_path=params_path)
+    if command_context.run_manifest is None:
+        raise RuntimeError("Run manifest was not created for the parse command.")
+
+    parsed_paper, raw_markdown_text, page_chunks = parse_pdf_into_parsed_paper(
+        pdf_path=pdf_path,
+        source_pdf_sha256=command_context.run_manifest.source_pdf_sha256 or "",
+        run_id=command_context.run_manifest.run_id,
+        code_version=_current_code_version(),
+    )
+
+    parsed_paper_path = command_context.artifact_store.write_json_model(
+        stage_name="parsed_paper",
+        file_name="parsed_paper.json",
+        payload=parsed_paper,
+    )
+    raw_markdown_path = command_context.artifact_store.write_text(
+        stage_name="parsed_paper",
+        file_name="raw_markdown.md",
+        text=raw_markdown_text,
+    )
+    page_chunks_path = command_context.artifact_store.write_text(
+        stage_name="parsed_paper",
+        file_name="page_chunks.json",
+        text=json.dumps(page_chunks, indent=2, ensure_ascii=False),
+    )
+
+    updated_artifact_paths = dict(command_context.run_manifest.stage_artifact_paths)
+    updated_artifact_paths["parsed_paper"] = str(parsed_paper_path)
+    updated_artifact_paths["parsed_paper_raw_markdown"] = str(raw_markdown_path)
+    updated_artifact_paths["parsed_paper_page_chunks"] = str(page_chunks_path)
+
+    updated_run_manifest = command_context.run_manifest.model_copy(
+        update={
+            "stage_artifact_paths": updated_artifact_paths,
+        }
+    )
+    command_context.artifact_store.write_json_model(
+        stage_name=None,
+        file_name="run_manifest.json",
+        payload=updated_run_manifest,
+    )
+
+    typer.echo(f"Run directory: {command_context.artifact_store.run_root_directory}")
+    typer.echo(f"Parsed paper artifact: {parsed_paper_path}")
+    typer.echo(f"Raw markdown artifact: {raw_markdown_path}")
+    typer.echo(f"Page chunks artifact: {page_chunks_path}")
+
+
+@app.command()
+def chunk(run_directory: Path) -> None:
+    """Build provenance-rich chunks from a parsed paper artifact."""
+
+    command_context = _prepare_existing_run_context(run_directory=run_directory)
+    if command_context.run_manifest is None:
+        raise RuntimeError("Run manifest is required before chunking can run.")
+
+    parsed_paper_path_string = command_context.run_manifest.stage_artifact_paths.get("parsed_paper")
+    if not parsed_paper_path_string:
+        raise FileNotFoundError("The chunk stage requires a parsed_paper artifact path in run_manifest.json.")
+
+    parsed_paper_path = Path(parsed_paper_path_string)
+    if not parsed_paper_path.is_file():
+        raise FileNotFoundError(f"The chunk stage requires parsed_paper.json, but it was not found: {parsed_paper_path}")
+
+    parsed_paper = ParsedPaper.model_validate_json(parsed_paper_path.read_text(encoding="utf-8"))
+    paper_chunks = build_chunks_from_parsed_paper(
+        parsed_paper=parsed_paper,
+        chunk_size_characters=command_context.run_parameters.chunk_size_characters,
+        chunk_overlap_characters=command_context.run_parameters.chunk_overlap_characters,
+    )
+
+    chunks_path = command_context.artifact_store.write_text(
+        stage_name="chunks",
+        file_name="chunks.json",
+        text=json.dumps([paper_chunk.model_dump(mode="json") for paper_chunk in paper_chunks], indent=2, ensure_ascii=False),
+    )
+
+    updated_artifact_paths = dict(command_context.run_manifest.stage_artifact_paths)
+    updated_artifact_paths["chunks"] = str(chunks_path)
+
+    updated_run_manifest = command_context.run_manifest.model_copy(update={"stage_artifact_paths": updated_artifact_paths})
+    command_context.artifact_store.write_json_model(
+        stage_name=None,
+        file_name="run_manifest.json",
+        payload=updated_run_manifest,
+    )
+
+    typer.echo(f"Run directory: {command_context.artifact_store.run_root_directory}")
+    typer.echo(f"Chunks artifact: {chunks_path}")
 
 
 @app.command()
@@ -127,4 +233,3 @@ def generate(run_directory: Path) -> None:
 
 if __name__ == "__main__":
     app()
-

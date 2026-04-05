@@ -1,0 +1,9 @@
+llama-server \
+  --model checkpoints/gemma-4-E2B-it-Q4_0.gguf \
+  --host 127.0.0.1 \
+  --port 8080 \
+  --ctx-size 4096 \
+  --threads 6 \
+  --threads-batch 6 \
+  --flash-attn auto \
+  --jinja

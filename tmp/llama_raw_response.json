@@ -1,0 +1,37 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "```json\n{\n\"lesson_title\":\"Attention Basics\",\n\"chunk_ids\":[\"chunk_1\"]\n}\n```",
+        "reasoning_content": "\nThinking Process:\n\n1.  **Analyze the Request:** The user provided a specific output format: `{\"lesson_title\":\"Attention Basics\",\"chunk_ids\":[\"chunk_1\"]}`.\n2.  **Determine the Goal:** The instruction is to return *only* that JSON structure.\n3.  **Verify Constraints:** The instruction explicitly states \"Return JSON only.\"\n4.  **Construct the Output:** The required output is the exact JSON provided in the prompt.\n\n5.  **Final Output Generation.**"
+      }
+    }
+  ],
+  "created": 1775378123,
+  "model": "gemma-4-E2B-it-Q4_0.gguf",
+  "system_fingerprint": "b8660-d00685831",
+  "object": "chat.completion",
+  "usage": {
+    "completion_tokens": 139,
+    "prompt_tokens": 36,
+    "total_tokens": 175,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    }
+  },
+  "id": "chatcmpl-ArAd004hQ1CQpR36lyhZLtvNiRYOD8Vd",
+  "timings": {
+    "cache_n": 0,
+    "prompt_n": 36,
+    "prompt_ms": 149.104,
+    "prompt_per_token_ms": 4.1417777777777784,
+    "prompt_per_second": 241.44221482991733,
+    "predicted_n": 139,
+    "predicted_ms": 2233.753,
+    "predicted_per_token_ms": 16.070165467625902,
+    "predicted_per_second": 62.22711284551156
+  }
+}
