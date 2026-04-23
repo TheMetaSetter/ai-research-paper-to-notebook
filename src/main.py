@@ -117,15 +117,285 @@ def _prepare_existing_run_context(run_directory: Path) -> CommandContext:
     )
 
 
+def _write_updated_run_manifest(
+    command_context: CommandContext,
+    stage_artifact_paths: dict[str, str],
+    active_model_provenance=None,
+) -> RunManifest:
+    if command_context.run_manifest is None:
+        raise RuntimeError("Run manifest is required before it can be updated.")
+
+    update_payload: dict[str, object] = {"stage_artifact_paths": stage_artifact_paths}
+    if active_model_provenance is not None:
+        update_payload["active_model_provenance"] = active_model_provenance
+
+    updated_run_manifest = command_context.run_manifest.model_copy(update=update_payload)
+    command_context.artifact_store.write_json_model(
+        stage_name=None,
+        file_name="run_manifest.json",
+        payload=updated_run_manifest,
+    )
+    command_context.run_manifest = updated_run_manifest
+    return updated_run_manifest
+
+
+def _load_or_capture_learner_profile(
+    command_context: CommandContext,
+    learner_profile_path: Path | None,
+) -> tuple[LearnerProfile, Path]:
+    if learner_profile_path is not None:
+        if not learner_profile_path.is_file():
+            raise FileNotFoundError(f"Learner profile path does not exist or is not a file: {learner_profile_path}")
+        learner_profile = LearnerProfile.model_validate_json(learner_profile_path.read_text(encoding="utf-8"))
+    else:
+        learner_profile = capture_learner_profile_interactively()
+
+    saved_learner_profile_path = save_learner_profile(
+        learner_profile=learner_profile,
+        output_path=command_context.artifact_store.stage_directory("learner_profile") / "learner_profile.json",
+    )
+    return learner_profile, saved_learner_profile_path
+
+
 @app.command()
 def run(
     pdf_path: Path,
     params_path: Path = Path("params.yaml"),
+    learner_profile_path: Path | None = typer.Option(
+        None,
+        "--learner-profile",
+        help="Path to a LearnerProfile JSON file. If omitted, the CLI prompts interactively.",
+    ),
 ) -> None:
     """Run the full pipeline from PDF to validated notebook."""
 
-    _prepare_run_command_context(pdf_path=pdf_path, params_path=params_path)
-    raise NotImplementedError("The full pipeline will be implemented in later phases.")
+    command_context = _prepare_run_command_context(pdf_path=pdf_path, params_path=params_path)
+    if command_context.run_manifest is None:
+        raise RuntimeError("Run manifest was not created for the run command.")
+
+    code_version = _current_code_version()
+
+    parsed_paper, raw_markdown_text, page_chunks = parse_pdf_into_parsed_paper(
+        pdf_path=pdf_path,
+        source_pdf_sha256=command_context.run_manifest.source_pdf_sha256 or "",
+        run_id=command_context.run_manifest.run_id,
+        code_version=code_version,
+    )
+    parsed_paper_path = command_context.artifact_store.write_json_model(
+        stage_name="parsed_paper",
+        file_name="parsed_paper.json",
+        payload=parsed_paper,
+    )
+    raw_markdown_path = command_context.artifact_store.write_text(
+        stage_name="parsed_paper",
+        file_name="raw_markdown.md",
+        text=raw_markdown_text,
+    )
+    page_chunks_path = command_context.artifact_store.write_text(
+        stage_name="parsed_paper",
+        file_name="page_chunks.json",
+        text=json.dumps(page_chunks, indent=2, ensure_ascii=False),
+    )
+    updated_artifact_paths = dict(command_context.run_manifest.stage_artifact_paths)
+    updated_artifact_paths["parsed_paper"] = str(parsed_paper_path)
+    updated_artifact_paths["parsed_paper_raw_markdown"] = str(raw_markdown_path)
+    updated_artifact_paths["parsed_paper_page_chunks"] = str(page_chunks_path)
+    _write_updated_run_manifest(command_context, updated_artifact_paths)
+
+    paper_chunks = build_chunks_from_parsed_paper(
+        parsed_paper=parsed_paper,
+        chunk_size_characters=command_context.run_parameters.chunk_size_characters,
+        chunk_overlap_characters=command_context.run_parameters.chunk_overlap_characters,
+    )
+    chunks_path = command_context.artifact_store.write_text(
+        stage_name="chunks",
+        file_name="chunks.json",
+        text=json.dumps([paper_chunk.model_dump(mode="json") for paper_chunk in paper_chunks], indent=2, ensure_ascii=False),
+    )
+    updated_artifact_paths = dict(command_context.run_manifest.stage_artifact_paths)
+    updated_artifact_paths["chunks"] = str(chunks_path)
+    _write_updated_run_manifest(command_context, updated_artifact_paths)
+
+    concept_model = Gemma4E2BModel.from_settings(
+        environment_settings=command_context.environment_settings,
+        run_parameters=command_context.run_parameters,
+    )
+    concept_items, concept_edges = build_concept_graph(
+        model=concept_model,
+        paper_chunks=paper_chunks,
+        retrieval_top_k=command_context.run_parameters.retrieval_top_k,
+    )
+    concepts_path = command_context.artifact_store.write_text(
+        stage_name="concept_graph",
+        file_name="concepts.json",
+        text=json.dumps([concept_item.model_dump(mode="json") for concept_item in concept_items], indent=2, ensure_ascii=False),
+    )
+    concept_edges_path = command_context.artifact_store.write_text(
+        stage_name="concept_graph",
+        file_name="concept_edges.json",
+        text=json.dumps(concept_edges, indent=2, ensure_ascii=False),
+    )
+    updated_artifact_paths = dict(command_context.run_manifest.stage_artifact_paths)
+    updated_artifact_paths["concept_graph"] = str(concepts_path)
+    updated_artifact_paths["concept_graph_edges"] = str(concept_edges_path)
+    _write_updated_run_manifest(command_context, updated_artifact_paths, active_model_provenance=concept_model.model_provenance())
+
+    learner_profile, saved_learner_profile_path = _load_or_capture_learner_profile(
+        command_context=command_context,
+        learner_profile_path=learner_profile_path,
+    )
+    updated_artifact_paths = dict(command_context.run_manifest.stage_artifact_paths)
+    updated_artifact_paths["learner_profile"] = str(saved_learner_profile_path)
+    _write_updated_run_manifest(command_context, updated_artifact_paths)
+
+    planning_model = Gemma4E2BModel.from_settings(
+        environment_settings=command_context.environment_settings,
+        run_parameters=command_context.run_parameters,
+    )
+    notebook_plan_path = command_context.artifact_store.stage_directory("notebook_plan") / "notebook_plan.json"
+    notebook_plan = build_notebook_plan(
+        model=planning_model,
+        learner_profile=learner_profile,
+        concept_items=concept_items,
+        paper_id=parsed_paper.paper_id,
+        input_artifact_paths=[str(concepts_path), str(saved_learner_profile_path)],
+        output_artifact_path=str(notebook_plan_path),
+        code_version=code_version,
+        maximum_generation_sections=command_context.run_parameters.maximum_generation_sections,
+    )
+    saved_notebook_plan_path = save_notebook_plan(notebook_plan=notebook_plan, output_path=notebook_plan_path)
+    updated_artifact_paths = dict(command_context.run_manifest.stage_artifact_paths)
+    updated_artifact_paths["notebook_plan"] = str(saved_notebook_plan_path)
+    _write_updated_run_manifest(command_context, updated_artifact_paths, active_model_provenance=planning_model.model_provenance())
+
+    generation_model = Gemma4E2BModel.from_settings(
+        environment_settings=command_context.environment_settings,
+        run_parameters=command_context.run_parameters,
+    )
+    lesson_sections = notebook_plan.lesson_sections
+    if command_context.run_parameters.maximum_generation_sections is not None:
+        lesson_sections = lesson_sections[: command_context.run_parameters.maximum_generation_sections]
+
+    saved_notebook_batch_paths: list[Path] = []
+    generated_notebook_batches: list[NotebookBatch] = []
+    for lesson_section in lesson_sections:
+        retrieved_chunks = select_retrieved_chunks_for_lesson_section(
+            lesson_section=lesson_section,
+            paper_chunks=paper_chunks,
+            retrieval_top_k=command_context.run_parameters.retrieval_top_k,
+        )
+        notebook_batch_path = command_context.artifact_store.stage_directory("cell_batches") / f"{lesson_section.section_id}.json"
+        notebook_batch = generate_notebook_batch_for_section(
+            model=generation_model,
+            learner_profile=learner_profile,
+            lesson_section=lesson_section,
+            retrieved_chunks=retrieved_chunks,
+            input_artifact_paths=[str(saved_notebook_plan_path), str(saved_learner_profile_path), str(chunks_path)],
+            output_artifact_path=str(notebook_batch_path),
+            code_version=code_version,
+        )
+        generated_notebook_batches.append(notebook_batch)
+        saved_notebook_batch_paths.append(save_notebook_batch(notebook_batch=notebook_batch, output_path=notebook_batch_path))
+
+    updated_artifact_paths = dict(command_context.run_manifest.stage_artifact_paths)
+    updated_artifact_paths["cell_batches"] = str(command_context.artifact_store.stage_directory("cell_batches"))
+    for saved_notebook_batch_path in saved_notebook_batch_paths:
+        updated_artifact_paths[f"cell_batch_{saved_notebook_batch_path.stem}"] = str(saved_notebook_batch_path)
+    _write_updated_run_manifest(command_context, updated_artifact_paths, active_model_provenance=generation_model.model_provenance())
+
+    notebook_title = parsed_paper.paper_title
+    notebook_metadata = build_notebook_metadata(
+        notebook_plan=notebook_plan,
+        run_id=command_context.run_manifest.run_id,
+        code_version=code_version,
+        model_provenance=command_context.run_manifest.active_model_provenance,
+        generated_section_batches=generated_notebook_batches,
+        parsed_paper=parsed_paper,
+    )
+    notebook_object = build_notebook_object(
+        notebook_title=notebook_title,
+        learner_profile=learner_profile,
+        generated_section_batches=generated_notebook_batches,
+        notebook_metadata=notebook_metadata,
+    )
+    notebook_output_path = write_notebook(
+        notebook_object=notebook_object,
+        output_path=command_context.artifact_store.stage_directory("notebook") / "final_notebook.ipynb",
+    )
+    updated_artifact_paths = dict(command_context.run_manifest.stage_artifact_paths)
+    updated_artifact_paths["notebook"] = str(notebook_output_path)
+    _write_updated_run_manifest(command_context, updated_artifact_paths)
+
+    validation_report, validation_issues = validate_assembled_notebook(
+        notebook_object=notebook_object,
+        notebook_plan=notebook_plan,
+        learner_profile=learner_profile,
+        generated_section_batches=generated_notebook_batches,
+        paper_id=notebook_plan.paper_id,
+        run_id=command_context.run_manifest.run_id,
+        notebook_path=str(notebook_output_path),
+        input_artifact_paths=[
+            str(notebook_output_path),
+            str(saved_notebook_plan_path),
+            str(saved_learner_profile_path),
+            *[str(saved_notebook_batch_path) for saved_notebook_batch_path in saved_notebook_batch_paths],
+        ],
+        code_version=code_version,
+        enable_smoke_test=command_context.run_parameters.enable_notebook_execution_smoke_test,
+        execution_timeout_seconds=command_context.run_parameters.notebook_execution_timeout_seconds,
+        working_directory=str(command_context.artifact_store.run_root_directory),
+    )
+
+    if not validation_report.is_valid and command_context.run_parameters.enable_repair_pass:
+        repair_outcome = attempt_targeted_repair(
+            validation_issues=validation_issues,
+            artifact_store=command_context.artifact_store,
+            run_manifest=command_context.run_manifest,
+            notebook_plan=notebook_plan,
+            learner_profile=learner_profile,
+            generated_section_batches=generated_notebook_batches,
+            parsed_paper=parsed_paper,
+            environment_settings=command_context.environment_settings,
+            run_parameters=command_context.run_parameters,
+            code_version=code_version,
+        )
+        if repair_outcome.repaired:
+            repaired_notebook_path = Path(repair_outcome.repaired_notebook_path) if repair_outcome.repaired_notebook_path else notebook_output_path
+            reloaded_notebook_object = nbformat.read(repaired_notebook_path, as_version=4)
+            repaired_batch_paths = command_context.artifact_store.list_stage_files("cell_batches", "*.json")
+            repaired_section_batches = load_notebook_batches(repaired_batch_paths)
+            validation_report, validation_issues = validate_assembled_notebook(
+                notebook_object=reloaded_notebook_object,
+                notebook_plan=notebook_plan,
+                learner_profile=learner_profile,
+                generated_section_batches=repaired_section_batches,
+                paper_id=notebook_plan.paper_id,
+                run_id=command_context.run_manifest.run_id,
+                notebook_path=str(repaired_notebook_path),
+                input_artifact_paths=[
+                    str(repaired_notebook_path),
+                    str(saved_notebook_plan_path),
+                    str(saved_learner_profile_path),
+                    *[str(repaired_batch_path) for repaired_batch_path in repaired_batch_paths],
+                ],
+                code_version=code_version,
+                enable_smoke_test=command_context.run_parameters.enable_notebook_execution_smoke_test,
+                execution_timeout_seconds=command_context.run_parameters.notebook_execution_timeout_seconds,
+                working_directory=str(command_context.artifact_store.run_root_directory),
+            )
+
+    validation_report_path = command_context.artifact_store.write_json_model(
+        stage_name="validation_report",
+        file_name="validation_report.json",
+        payload=validation_report,
+    )
+    updated_artifact_paths = dict(command_context.run_manifest.stage_artifact_paths)
+    updated_artifact_paths["validation_report"] = str(validation_report_path)
+    _write_updated_run_manifest(command_context, updated_artifact_paths)
+
+    typer.echo(f"Run directory: {command_context.artifact_store.run_root_directory}")
+    typer.echo(f"Notebook artifact: {notebook_output_path}")
+    typer.echo(f"Validation report artifact: {validation_report_path}")
 
 
 @app.command()
