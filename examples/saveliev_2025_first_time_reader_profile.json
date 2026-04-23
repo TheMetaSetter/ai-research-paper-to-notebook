@@ -1,0 +1,11 @@
+{
+  "mathematics_background": "Comfortable with basic statistics and reading plots, but not expecting heavy derivations.",
+  "machine_learning_background": "Knows the basic idea of supervised learning, train/test splits, features, labels, and model evaluation.",
+  "deep_learning_background": "Beginner. Has heard of LLMs and prompts, but has not studied model internals deeply.",
+  "python_background": "Can read simple Python and notebook cells, but prefers code examples to be short and heavily explained.",
+  "tensor_familiarity": "Low to moderate. Tensor shapes should be explained only when they are necessary for understanding.",
+  "wants_tensor_shapes": true,
+  "wants_derivations": false,
+  "preferred_depth": "deep",
+  "preferred_pacing": "slow"
+}
