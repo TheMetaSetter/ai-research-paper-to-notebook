@@ -58,6 +58,11 @@ class RunArtifactStore:
         stage_path.mkdir(parents=True, exist_ok=True)
         return stage_path
 
+    def list_stage_files(self, stage_name: str, glob_pattern: str) -> list[Path]:
+        """Return deterministically ordered stage files for a narrow stage helper."""
+
+        return sorted(self.stage_directory(stage_name).glob(glob_pattern))
+
     def default_stage_artifact_paths(self) -> dict[str, str]:
         return {
             stage_name: str(self.stage_directory(stage_name) / file_name)
@@ -103,4 +108,3 @@ class RunArtifactStore:
 
 def utc_timestamp_string() -> str:
     return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-
